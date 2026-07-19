@@ -1,0 +1,180 @@
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import sqlite3
+import subprocess
+import os
+import glob
+import json
+import zipfile
+
+app = FastAPI()
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+DB_PATH = "/home/iann/offensive-guard/events.db"
+
+@app.get("/events")
+def get_events():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM events ORDER BY timestamp DESC LIMIT 100")
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+@app.get("/export")
+def export(ip: str = None):
+    cmd = ["python3", "/home/iann/offensive-guard/evidence/packager.py"]
+    if ip:
+        cmd.append(ip)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return {"message": "Evidence pack created", "output": result.stdout}
+
+@app.get("/stats")
+def get_stats():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM events")
+    total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM events WHERE severity = 'High'")
+    high = cur.fetchone()[0]
+    cur.execute("SELECT DISTINCT source_ip FROM events WHERE severity = 'High'")
+    blocked_ips = [row[0] for row in cur.fetchall()]
+    conn.close()
+    return {"total_events": total, "high_severity": high, "blocked_ips": blocked_ips}
+
+@app.get("/evidence/list")
+def list_evidence():
+    evidence_dir = os.path.expanduser("~/offensive-guard/evidence_packs")
+    if not os.path.exists(evidence_dir):
+        return []
+    files = glob.glob(os.path.join(evidence_dir, "*.zip"))
+    packs = []
+    for f in files:
+        packs.append({"name": os.path.basename(f), "path": f})
+    return packs
+
+@app.get("/evidence/structure")
+def evidence_structure(pack_name: str):
+    base = os.path.expanduser("~/offensive-guard/evidence_packs")
+    zip_path = os.path.join(base, pack_name)
+    if not os.path.exists(zip_path):
+        return {"error": "Pack not found"}
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        if "events.json" in zf.namelist():
+            data = zf.read("events.json").decode("utf-8")
+            return json.loads(data)
+    return {"error": "No events.json found"}
+
+@app.get("/active_scan")
+def active_scan(target_ip: str):
+    try:
+        result = subprocess.run(["nmap", "-p-", "--open", "-T4", target_ip], capture_output=True, text=True, timeout=60)
+        return {"target": target_ip, "output": result.stdout}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/block_ip")
+def block_ip(ip: str):
+    try:
+        subprocess.run(["sudo", "iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"], check=True)
+        return {"status": "blocked", "ip": ip}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/drop_packets")
+def drop_packets(ip: str):
+    return block_ip(ip)
+
+@app.post("/false_credential")
+def false_credential(credential: str = None):
+    log_entry = f"Fake credential used: {credential if credential else 'unknown'}"
+    with open("/home/iann/offensive-guard/fake_creds.log", "a") as f:
+        f.write(f"{log_entry}\n")
+    return {"status": "logged", "message": log_entry}
+
+@app.get("/report")
+def generate_report():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM events")
+    total = cur.fetchone()[0]
+    cur.execute("SELECT DISTINCT source_ip FROM events")
+    attackers = [row[0] for row in cur.fetchall()]
+    conn.close()
+    report = {
+        "total_events": total,
+        "attackers": attackers,
+        "ttps": ["SSH brute‑force", "Credential guessing"],
+        "affected_systems": ["Cowrie SSH honeypot", "HTTP decoy"],
+        "defence_methods": ["IP blocking via iptables", "Automated alerting", "Evidence packaging with SHA‑256"],
+        "structured_evidence": {
+            "format": "JSON + ZIP",
+            "hashes": "SHA‑256 per pack",
+            "database": "SQLite at ~/offensive-guard/events.db"
+        }
+    }
+    return report
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def serve_dashboard():
+    with open("dashboard/index.html", "r") as f:
+        return f.read()
+# ---------- Demo authentication (hardcoded for demonstration) ----------
+DEMO_USER = {"username": "admin", "password": "admin123"}
+
+@app.post("/login")
+async def login(request: Request):
+    data = await request.json()
+    user = data.get("username")
+    pwd = data.get("password")
+    if user == DEMO_USER["username"] and pwd == DEMO_USER["password"]:
+        return {"success": True, "message": "Login successful"}
+    else:
+        return {"success": False, "message": "Invalid credentials"}
+
+# ---------- Suspicious IPs (aggregated from events) ----------
+@app.get("/suspicious_ips")
+def get_suspicious_ips():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT source_ip, COUNT(*) as count,
+               MAX(CASE WHEN severity = 'High' THEN 1 ELSE 0 END) as is_high,
+               MAX(CASE WHEN source_ip IN (SELECT source_ip FROM events WHERE severity = 'High') THEN 1 ELSE 0 END) as blocked
+        FROM events
+        GROUP BY source_ip
+        ORDER BY count DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        result.append({
+            "ip": row[0],
+            "count": row[1],
+            "high": bool(row[2]),
+            "blocked": bool(row[3])
+        })
+    return result
+
+# ---------- Whitelist an IP (remove iptables rule) ----------
+@app.post("/whitelist_ip")
+def whitelist_ip(ip: str):
+    try:
+        subprocess.run(["sudo", "iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"], check=False)
+        return {"success": True, "message": f"IP {ip} whitelisted (rule removed)."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

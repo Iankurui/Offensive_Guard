@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offensive Guard | SOC Console</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body.transition-theme { transition: background 0.2s, color 0.2s; }
+        .sidebar-item { transition: all 0.2s ease; cursor: pointer; }
+        .sidebar-item:hover { background: rgba(56, 189, 248, 0.1); transform: translateX(4px); }
+        .card { border-radius: 1rem; backdrop-filter: blur(2px); }
+        .dark .card { background: #1e293b; border: 1px solid #334155; }
+        .light .card { background: #f8fafc; border: 1px solid #e2e8f0; }
+        .dark { background: #0f172a; color: #f1f5f9; }
+        .light { background: #f1f5f9; color: #0f172a; }
+        .table-row:hover { background: rgba(56, 189, 248, 0.05); }
+        .badge-high { background: #b91c1c; }
+        .badge-medium { background: #d97706; }
+        .badge-low { background: #059669; }
+    </style>
+</head>
+<body class="dark transition-theme" id="appBody">
+
+<div class="flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="w-64 fixed h-full overflow-y-auto border-r dark:border-slate-700 light:border-slate-300 dark:bg-slate-900 light:bg-white z-10">
+        <div class="p-5 border-b dark:border-slate-700 light:border-slate-300">
+            <div class="flex items-center gap-2">
+                <i class="fas fa-shield-haltered text-cyan-500 text-2xl"></i>
+                <span class="font-bold text-xl">Offensive Guard</span>
+            </div>
+            <p class="text-xs text-cyan-400 mt-1">Active Defense SOC</p>
+        </div>
+        <nav class="py-4">
+            <a data-view="dashboard" class="sidebar-item flex items-center gap-3 px-5 py-2.5"><i class="fas fa-tachometer-alt w-5"></i> Dashboard</a>
+            <a data-view="incidents" class="sidebar-item flex items-center gap-3 px-5 py-2.5"><i class="fas fa-bell w-5"></i> Incidents & Events</a>
+            <a data-view="suspicious" class="sidebar-item flex items-center gap-3 px-5 py-2.5"><i class="fas fa-flag w-5"></i> Suspicious IPs</a>
+            <a data-view="evidence" class="sidebar-item flex items-center gap-3 px-5 py-2.5"><i class="fas fa-box-archive w-5"></i> Evidence</a>
+            <a data-view="logs" class="sidebar-item flex items-center gap-3 px-5 py-2.5"><i class="fas fa-history w-5"></i> Logs</a>
+            <a data-view="reports" class="sidebar-item flex items-center gap-3 px-5 py-2.5"><i class="fas fa-file-alt w-5"></i> Reports</a>
+            <a data-view="settings" class="sidebar-item flex items-center gap-3 px-5 py-2.5"><i class="fas fa-cog w-5"></i> Settings</a>
+        </nav>
+        <div class="p-4 border-t dark:border-slate-700 light:border-slate-300">
+            <button id="logoutBtn" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg transition bg-slate-800 hover:bg-red-600 text-white">
+                <i class="fas fa-sign-out-alt"></i> Logout
+            </button>
+        </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="ml-64 flex-1 p-6" id="mainContent"></main>
+</div>
+
+<!-- Settings modal -->
+<div id="settingsModal" class="fixed inset-0 bg-black/70 flex items-center justify-center hidden z-50">
+    <div class="dark:bg-slate-800 light:bg-white rounded-2xl p-6 w-96 border dark:border-slate-600">
+        <h2 class="text-2xl font-bold mb-4">Settings</h2>
+        <div class="mb-3">
+            <label class="block text-sm mb-1">Auto-refresh (seconds)</label>
+            <input type="number" id="refreshInterval" value="5" class="w-full p-2 rounded dark:bg-slate-700 light:bg-slate-100">
+        </div>
+        <div class="mb-4">
+            <label class="block text-sm mb-1">Theme</label>
+            <select id="themeSelect" class="w-full p-2 rounded dark:bg-slate-700 light:bg-slate-100">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+            </select>
+        </div>
+        <div class="mb-4">
+            <label class="block text-sm mb-1">Account Management (Demo)</label>
+            <input type="text" id="demoUsername" placeholder="New username" class="w-full p-2 mb-2 rounded dark:bg-slate-700 light:bg-slate-100">
+            <input type="password" id="demoPassword" placeholder="New password" class="w-full p-2 mb-2 rounded dark:bg-slate-700 light:bg-slate-100">
+            <button id="updateAccountBtn" class="bg-cyan-600 px-3 py-1 rounded text-sm w-full">Update Credentials</button>
+        </div>
+        <div class="flex justify-end">
+            <button id="closeSettings" class="px-4 py-2 bg-slate-600 rounded">Close</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const API_BASE = "http://192.168.56.107:8000";
+    let autoRefreshId = null;
+    let currentView = "dashboard";
+    let eventsCache = [];
+    let statsCache = null;
+    let packsCache = [];
+
+    // Fetch helpers
+    async function fetchJSON(endpoint, opts = {}) {
+        try {
+            const res = await fetch(`${API_BASE}${endpoint}`, opts);
+            if (!res.ok) return null;
+            return await res.json();
+        } catch(e) { console.warn(e); return null; }
+    }
+
+    async function refreshData() {
+        eventsCache = await fetchJSON("/events") || [];
+        statsCache = await fetchJSON("/stats");
+        packsCache = await fetchJSON("/evidence/list") || [];
+    }
+
+    // Helper: get category and TTPs
+    function getTTP(eventType) {
+        const ttpMap = {
+            'ssh_login_failed': 'T1110 (Brute Force)',
+            'tcp_probe': 'T1046 (Network Service Scanning)',
+            'udp_probe': 'T1046',
+            'http_probe': 'T1595 (Active Scanning)',
+            'smb_connection': 'T1021 (Remote Services)',
+            'rdp_connection': 'T1021.001 (RDP)',
+            'telnet_login': 'T1110.003 (Password Spraying)'
+        };
+        return ttpMap[eventType] || 'T1595 (Reconnaissance)';
+    }
+
+    function getDescription(eventType, summary) {
+        if (eventType === 'ssh_login_failed') return 'Multiple failed SSH login attempts detected from a single source. Indicates brute-force or credential guessing.';
+        if (eventType.includes('probe')) return 'Attacker scanned network services or web paths, possibly enumerating vulnerable endpoints.';
+        return summary || 'Suspicious activity detected by honeypot.';
+    }
+
+    function getResolution(eventType) {
+        if (eventType === 'ssh_login_failed') return 'Block the offending IP (automatically done by Offensive Guard). Review logs for successful logins and rotate credentials if necessary.';
+        return 'Isolate affected assets, review firewall rules, and harden exposed services.';
+    }
+
+    // ========================== DASHBOARD ==========================
+    async function renderDashboard() {
+        await refreshData();
+        const total = eventsCache.length;
+        const high = eventsCache.filter(e => e.severity === 'High').length;
+        const blocked = statsCache?.blocked_ips?.length || 0;
+        const lastEvent = eventsCache[0]?.timestamp?.replace('T', ' ').slice(0,19) || 'None';
+
+        // Prepare data for bar chart (events per day, last 7 days)
+        const last7 = [];
+        const today = new Date();
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date(); d.setDate(today.getDate() - i);
+            last7.push(d.toISOString().slice(0,10));
+        }
+        const counts = last7.map(day => eventsCache.filter(e => e.timestamp?.startsWith(day)).length);
+
+        const html = `
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div class="card p-4"><i class="fas fa-chart-line text-cyan-400 text-2xl"></i><div class="text-sm">Total Events</div><div class="text-2xl font-bold">${total}</div></div>
+                <div class="card p-4"><i class="fas fa-exclamation-triangle text-red-400 text-2xl"></i><div class="text-sm">High Severity</div><div class="text-2xl font-bold">${high}</div></div>
+                <div class="card p-4"><i class="fas fa-ban text-orange-400 text-2xl"></i><div class="text-sm">Blocked IPs</div><div class="text-2xl font-bold">${blocked}</div></div>
+                <div class="card p-4"><i class="fas fa-clock text-green-400 text-2xl"></i><div class="text-sm">Last Attack</div><div class="text-sm font-mono">${lastEvent}</div></div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                <div class="card p-4"><h3 class="text-lg font-semibold mb-2">Severity Distribution</h3><canvas id="pieChart" width="200" height="200"></canvas></div>
+                <div class="card p-4"><h3 class="text-lg font-semibold mb-2">Attacks per Day (last 7 days)</h3><canvas id="barChart" height="200"></canvas></div>
+            </div>
+        `;
+        document.getElementById("mainContent").innerHTML = html;
+        // Pie chart (small size)
+        const pieCtx = document.getElementById('pieChart')?.getContext('2d');
+        if (pieCtx) {
+            const highC = eventsCache.filter(e=>e.severity==='High').length;
+            const medC = eventsCache.filter(e=>e.severity==='Medium').length;
+            const lowC = eventsCache.filter(e=>e.severity==='Low').length;
+            new Chart(pieCtx, { type: 'doughnut', data: { labels: ['High','Medium','Low'], datasets: [{ data: [highC, medC, lowC], backgroundColor: ['#ef4444','#f59e0b','#10b981'], borderWidth: 0 }] }, options: { responsive: true, maintainAspectRatio: true } });
+        }
+        const barCtx = document.getElementById('barChart')?.getContext('2d');
+        if (barCtx) {
+            new Chart(barCtx, { type: 'bar', data: { labels: last7, datasets: [{ label: 'Events', data: counts, backgroundColor: '#38bdf8' }] } });
+        }
+    }
+
+    // ========================== INCIDENTS (full table) ==========================
+    async function renderIncidents() {
+        await refreshData();
+        const html = `<div class="card p-4"><h2 class="text-2xl font-bold mb-4">All Incidents</h2><div class="overflow-x-auto"><table class="w-full text-sm text-left"><thead class="dark:bg-slate-800 light:bg-slate-200"><tr><th>Name/Summary</th><th>Indicator (IP)</th><th>Reporter</th><th>Severity</th><th>ID</th><th>Actions</th></tr></thead><tbody id="incidentsTableBody"></tbody></table></div></div>`;
+        document.getElementById("mainContent").innerHTML = html;
+        const tbody = document.getElementById("incidentsTableBody");
+        tbody.innerHTML = eventsCache.map(ev => `
+            <tr class="border-b dark:border-slate-700">
+                <td class="px-3 py-2">${ev.summary || ev.event_type}</td>
+                <td class="px-3 py-2 font-mono text-xs">${ev.source_ip}</td>
+                <td class="px-3 py-2">${ev.asset}</td>
+                <td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs ${ev.severity==='High'?'bg-red-600':ev.severity==='Medium'?'bg-yellow-600':'bg-green-600'}">${ev.severity}</span></td>
+                <td class="px-3 py-2 text-xs">${ev.id.slice(0,8)}</td>
+                <td class="px-3 py-2"><button class="view-ev-details bg-blue-600 px-2 py-1 rounded text-xs" data-id="${ev.id}">View</button> <button class="export-ev-ip bg-purple-600 px-2 py-1 rounded text-xs" data-ip="${ev.source_ip}">Export</button></td>
+            </tr>
+        `).join('');
+        attachViewDetails();
+        attachExportIP();
+    }
+
+    function attachViewDetails() {
+        document.querySelectorAll('.view-ev-details').forEach(btn => btn.onclick = () => alert(JSON.stringify(eventsCache.find(e=>e.id===btn.dataset.id),null,2)));
+    }
+    function attachExportIP() {
+        document.querySelectorAll('.export-ev-ip').forEach(btn => btn.onclick = async () => { await fetch(`${API_BASE}/export?ip=${btn.dataset.ip}`); alert('Export triggered'); });
+    }
+
+    // ========================== SUSPICIOUS IPS ==========================
+    async function renderSuspicious() {
+        await refreshData();
+        const ips = [...new Map(eventsCache.map(ev => [ev.source_ip, ev])).values()].slice(0,50);
+        const html = `<div class="card p-4"><h2 class="text-2xl font-bold mb-4">Suspicious IPs</h2><div class="overflow-x-auto"><table class="w-full"><thead><tr><th>IP</th><th>First Seen</th><th>Last Seen</th><th>Actions</th></tr></thead><tbody id="suspiciousBody"></tbody></table></div></div>`;
+        document.getElementById("mainContent").innerHTML = html;
+        const tbody = document.getElementById("suspiciousBody");
+        tbody.innerHTML = ips.map(ip => `<tr><td class="py-2">${ip.source_ip}</td><td>${ip.timestamp?.slice(0,10)}</td><td>${ip.timestamp?.slice(0,10)}</td><td><button class="block-ip-btn bg-red-600 px-2 py-1 rounded text-xs" data-ip="${ip.source_ip}">Block</button> <button class="whitelist-ip-btn bg-green-600 px-2 py-1 rounded text-xs" data-ip="${ip.source_ip}">Whitelist</button></td></tr>`).join('');
+        document.querySelectorAll('.block-ip-btn').forEach(btn => btn.onclick = async () => { await fetch(`${API_BASE}/block_ip`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`ip=${btn.dataset.ip}`}); alert('Blocked'); renderSuspicious(); });
+        document.querySelectorAll('.whitelist-ip-btn').forEach(btn => btn.onclick = async () => { await fetch(`${API_BASE}/whitelist_ip?ip=${btn.dataset.ip}`,{method:'POST'}); alert('Whitelisted'); renderSuspicious(); });
+    }
+
+    // ========================== EVIDENCE ==========================
+    async function renderEvidence() {
+        await refreshData();
+        const html = `<div class="card p-4"><h2 class="text-2xl font-bold mb-4">Evidence Packs</h2><ul class="space-y-2">${packsCache.map(p => `<li class="p-2 dark:bg-slate-800 rounded flex justify-between"><span><i class="fas fa-file-archive mr-2"></i> ${p.name}</span><button class="view-struct bg-cyan-600 px-2 py-1 rounded text-xs" data-name="${p.name}">View JSON</button></li>`).join('') || '<li>No evidence packs</li>'}</ul><button id="exportAllEvidence" class="mt-4 bg-purple-600 px-4 py-2 rounded w-full">Export All</button></div>`;
+        document.getElementById("mainContent").innerHTML = html;
+        document.querySelectorAll('.view-struct').forEach(btn => btn.onclick = async () => { const data = await fetchJSON(`/evidence/structure?pack_name=${btn.dataset.name}`); alert(JSON.stringify(data,null,2)); });
+        document.getElementById('exportAllEvidence')?.addEventListener('click', async () => { await fetch(`${API_BASE}/export`); alert('Export started'); });
+    }
+
+    // ========================== LOGS ==========================
+    async function renderLogs() {
+        await refreshData();
+        const html = `<div class="card p-4"><h2 class="text-2xl font-bold mb-4">Raw Event Logs</h2><div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr><th>Time</th><th>IP</th><th>Type</th><th>Severity</th><th>Asset</th><th>Summary</th></tr></thead><tbody>${eventsCache.map(ev => `<tr><td class="py-1">${ev.timestamp?.slice(0,19).replace('T',' ')}</td><td>${ev.source_ip}</td><td>${ev.event_type}</td><td>${ev.severity}</td><td>${ev.asset}</td><td class="max-w-md truncate">${ev.summary}</td></tr>`).join('')}</tbody></table></div></div>`;
+        document.getElementById("mainContent").innerHTML = html;
+    }
+
+    // ========================== REPORTS ==========================
+    async function renderReports() {
+        await refreshData();
+        const html = `<div class="card p-4"><h2 class="text-2xl font-bold mb-4">Incident Report & TTPs</h2><div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr><th>Name</th><th>Severity</th><th>Time</th><th>Location (IP)</th><th>Affected Endpoint</th><th>Description</th><th>Resolution</th><th>Similar Incidents</th><th>Structured Evidence</th></tr></thead><tbody>${eventsCache.slice(0,30).map(ev => `<tr class="border-b dark:border-slate-700"><td class="p-2">${ev.event_type}</td><td>${ev.severity}</td><td>${ev.timestamp?.slice(0,19).replace('T',' ')}</td><td>${ev.source_ip}</td><td>${ev.asset}</td><td class="max-w-xs">${getDescription(ev.event_type, ev.summary)}</td><td class="max-w-xs">${getResolution(ev.event_type)}</td><td>Brute-force, scanning</td><td><button class="export-ev-link bg-cyan-600 px-2 py-1 rounded text-xs" data-ip="${ev.source_ip}">Export</button></td></tr>`).join('')}</tbody></table></div></div>`;
+        document.getElementById("mainContent").innerHTML = html;
+        document.querySelectorAll('.export-ev-link').forEach(btn => btn.onclick = async () => { await fetch(`${API_BASE}/export?ip=${btn.dataset.ip}`); alert('Export started'); });
+    }
+
+    // ========================== SETTINGS & THEME ==========================
+    function openSettings() {
+        document.getElementById("settingsModal").classList.remove("hidden");
+        const interval = localStorage.getItem('refreshInterval') || '5';
+        document.getElementById("refreshInterval").value = interval;
+        const theme = localStorage.getItem('theme') || 'dark';
+        document.getElementById("themeSelect").value = theme;
+    }
+    function closeSettings() {
+        document.getElementById("settingsModal").classList.add("hidden");
+        const interval = parseInt(document.getElementById("refreshInterval").value);
+        if (interval>0) { localStorage.setItem('refreshInterval', interval); setAutoRefresh(interval); }
+        const theme = document.getElementById("themeSelect").value;
+        localStorage.setItem('theme', theme);
+        document.body.classList.remove('dark','light');
+        document.body.classList.add(theme);
+    }
+    function setAutoRefresh(seconds) {
+        if (autoRefreshId) clearInterval(autoRefreshId);
+        autoRefreshId = setInterval(async () => {
+            if (currentView === 'dashboard') await renderDashboard();
+            else if (currentView === 'incidents') await renderIncidents();
+            else if (currentView === 'suspicious') await renderSuspicious();
+            else if (currentView === 'evidence') await renderEvidence();
+            else if (currentView === 'logs') await renderLogs();
+            else if (currentView === 'reports') await renderReports();
+        }, seconds * 1000);
+    }
+
+    async function switchView(view) {
+        currentView = view;
+        if (view === 'dashboard') await renderDashboard();
+        else if (view === 'incidents') await renderIncidents();
+        else if (view === 'suspicious') await renderSuspicious();
+        else if (view === 'evidence') await renderEvidence();
+        else if (view === 'logs') await renderLogs();
+        else if (view === 'reports') await renderReports();
+        else if (view === 'settings') openSettings();
+    }
+
+    // Event listeners
+    document.querySelectorAll('[data-view]').forEach(el => {
+        el.addEventListener('click', (e) => { e.preventDefault(); switchView(el.getAttribute('data-view')); });
+    });
+    document.getElementById("closeSettings")?.addEventListener('click', closeSettings);
+    document.getElementById("updateAccountBtn")?.addEventListener('click', () => {
+        const newUser = document.getElementById("demoUsername").value;
+        const newPass = document.getElementById("demoPassword").value;
+        if (newUser) localStorage.setItem('demoUser', newUser);
+        if (newPass) localStorage.setItem('demoPass', newPass);
+        alert('Demo credentials updated (local only)');
+    });
+    document.getElementById("logoutBtn")?.addEventListener('click', () => { alert('Logged out (demo)'); location.reload(); });
+
+    // Apply saved theme
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    document.body.classList.add(savedTheme);
+    document.getElementById("themeSelect").value = savedTheme;
+
+    // Start
+    switchView('dashboard');
+    const interval = parseInt(localStorage.getItem('refreshInterval') || '5');
+    setAutoRefresh(interval);
+</script>
+</body>
+</html>
