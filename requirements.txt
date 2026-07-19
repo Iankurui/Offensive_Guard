@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+flask
+requests
+watchdog
+pydantic
+python-multipart
+jinja2
