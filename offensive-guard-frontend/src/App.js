@@ -4,7 +4,8 @@ import {
   PieChart, Pie, Cell
 } from 'recharts';
 
-const API_BASE = 'http://192.168.56.107:8000';
+const API_BASE = 'ip';
+//Replace 'ip' with your real ip address
 const COLORS = ['#ef4444', '#f59e0b', '#10b981'];
 
 function App() {
