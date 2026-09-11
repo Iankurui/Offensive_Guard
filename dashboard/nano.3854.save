@@ -4,7 +4,7 @@ import os
 
 app = FastAPI()
 
-DB_PATH = "/home/iann/offensive-guard/events.db"
+DB_PATH = "Enter your d.b directory path here"
 
 @app.get("/events")
 def get_events():
