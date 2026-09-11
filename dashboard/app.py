@@ -25,7 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://192.168.56.1:3000"],
+    allow_origins=["http://localhost:3000", "Enter you real ip address here"],
+    // Enter your victim ip address here
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
